@@ -27,9 +27,6 @@ raster_slope_lima <- rast("data/Lima/Rasters/SRTM_GL3/viz.SRTMGL3_slope.tif")
 # Roughness Raster (Lima Specific):
 raster_roughness_lima <- rast("data/Lima/Rasters/SRTM_GL3/viz.SRTMGL3_roughness.tif")
 
-# Relief Raster (Lima Specific):
-raster_relief_lima <- rast("data/Lima/Rasters/SRTM_GL3/viz.SRTMGL3_color-relief.tif")
-
 # Aspect Raster (Lima Specific):
 raster_aspect_lima <- rast("data/Lima/Rasters/SRTM_GL3/viz.SRTMGL3_aspect.tif")
 
@@ -66,38 +63,106 @@ centroids_distance_matrix <- st_distance(lima_centroids)
 
 
 
-# Creating road density raster: ( This part still under development, to see the initial plot, do not execute, just go to plotting part)
-# Transforming into a terra object.
-lima_roads <- vect(lima_roads)
-# Assigning a value to each road in Lima:
-lima_roads$value <- 1
+# Sub-setting lima_geometries to match our area of interest:
 
-#Creating a raster template:
-raster_road_density <- rast(ext(lima_roads), resolution = 100)
+# Transforming one of the rasters into polygons:
+raster_extent_pol <- as.polygons(ext(raster_slope_lima))
+crs(raster_extent_pol) <- crs(raster_slope_lima)
 
-r_count <- rasterize(lima_roads, raster_road_density, field = "value", fun = sum, background = 0)
+# Transforming it into a sf_object
+raster_extent_sf <- st_as_sf(raster_extent_pol)
 
-plot(r_count)
+# If neccesary transforming the CRS.
+if (st_crs(lima_geoms) != st_crs(raster_extent_sf)) {
+  lima_geoms <- st_transform(lima_geoms, st_crs(raster_extent_sf))
+}
 
+# Intersecting both geometries
+lima_geoms_cropped <- st_intersection(lima_geoms, raster_extent_sf)
 
-lima_geoms <- vect(lima_geoms)
-
-
-zonal_stats <- extract(r_count, lima_geoms, fun = sum, na.rm = TRUE)
-
-lima_geoms$line_count <- zonal_stats[, 2]
-
-plot(lima_geoms["line_count"])
-
-
-print(lima_geoms)
+# Visualizing:
+plot(raster_aspect_lima)
+plot(lima_geoms_cropped$geometry, add = TRUE, col = "red", lwd = 2)
 
 
 
-# Plotting:
-ggplot() +
-  geom_sf(data = lima_geoms, color = 'black') +
-  geom_sf(data = lima_roads, color = 'black') +
-  geom_sf(data = lima_centroids, color = 'red') +
-  ggtitle('Lima Road Network + District geografical centroids')
-  theme_minimal()
+
+# Cropping rasters into lima_cropped polygons:
+raster_aspect_lima_crop <- crop(raster_aspect_lima, lima_geoms_cropped)
+raster_night_lights_crop <- crop(raster_night_lights, lima_geoms_cropped)
+raster_roughness_lima <- crop(raster_roughness_lima, lima_geoms_cropped)
+raster_slope_lima_crop <- crop(raster_slope_lima, lima_geoms_cropped)
+
+# Masking every cropped raster:
+raster_aspect_lima_mask <- mask(raster_aspect_lima_crop, lima_geoms_cropped)
+raster_night_lights_mask <- mask(raster_night_lights_crop, lima_geoms_cropped)
+raster_roughness_lima_mask <- mask(raster_roughness_lima, lima_geoms_cropped)
+raster_slope_lima_mask <- mask(raster_slope_lima_crop, lima_geoms_cropped)
+
+
+
+# Visualize every mask
+plot(raster_aspect_lima_mask, main = "Aspect Masked")
+plot(st_geometry(lima_geoms_cropped),add=T)
+
+plot(raster_night_lights_mask, main = "Night Lights Masked")
+plot(st_geometry(lima_geoms_cropped),add=T)
+
+plot(raster_roughness_lima_mask, main = "Roughness Masked")
+plot(st_geometry(lima_geoms_cropped),add=T)
+
+plot(raster_slope_lima_mask, main = "Slope Masked")
+plot(st_geometry(lima_geoms_cropped),add=T)
+
+plot(lima_geoms_cropped$geometry, add = TRUE, col = "red", lwd = 2)
+
+
+# Resampling night_light to match the other rasters:
+raster_night_lights_resampled <- resample(raster_night_lights_mask, raster_aspect_lima_mask, method = "bilinear")
+
+
+# Turning rasters into vectors:
+rast_aspect_val <- values(raster_aspect_lima_mask)[,1]
+rast_night_lights_val <- values(raster_night_lights_resampled)[,1]
+rast_roughness_val <- values(raster_roughness_lima_mask)[,1]
+rast_slope_val <- values(raster_slope_lima_mask)[,1]
+
+
+# Creating a dataframe for raster values manipulations:
+
+rasters_dataframe <- data.frame(
+  aspect = rast_aspect_val,
+  night_lights = rast_night_lights_val,
+  roughness = rast_roughness_val,
+  slope = rast_slope_val
+)
+
+# Creating a new combination_raster:
+rasters_dataframe$combined <- rowSums(rasters_dataframe, na.rm = TRUE)
+
+# Reconstructing the raster from a dataframe colummn into a spat raster using the slope raster as reference:
+raster_combined <- raster_slope_lima_mask
+values(raster_combined) <- rasters_dataframe$combined
+
+
+# Locating the NA rows.
+celdas_validas <- which(!is.na(values(raster_combined)))
+
+# Mapping the new values into the non-NA rows
+vals <- values(raster_combined)
+vals[celdas_validas] <- rasters_dataframe$combined
+values(raster_combined) <- vals
+
+length(rasters_dataframe$combined) 
+
+# Visualizing:
+plot(raster_combined, main = "Combined Raster + Roads + Centroids")
+plot(lima_roads,add=T)
+plot(st_geometry(lima_geoms_cropped), add=T)
+plot(st_geometry(lima_centroids), add = TRUE, col = "red", pch = 20, cex = 1.2)
+
+
+# Storing the combined raster:
+writeRaster(raster_suma, "combined_raster.tif", overwrite = TRUE)
+
+
